@@ -29,10 +29,10 @@ NAME_START = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_"
 NAME_CHARS = NAME_START + DIGITS
 VALUE_KINDS = ("number", "name", "right")
 
-OPERATOR_PRECEDENCE = {"+": 1, "-": 1, "*": 2, "/": 2, "%": 1, "^": 4}
+OPERATOR_PRECEDENCE = {"+": 1, "-": 1, "*": 2, "/": 2, "%": 2, "^": 4}
 OPERATOR_ASSOCIATIVITY = {"+": "left", "-": "left", "*": "left", "/": "left",
                           "%": "left", "^": "right"}
-UNARY_PRECEDENCE = 5
+UNARY_PRECEDENCE = 3
 UNARY_OPERATORS = ("+", "-")
 
 
@@ -132,7 +132,7 @@ def _outranks(top_precedence, current_precedence, current_associativity):
         return True
     if top_precedence < current_precedence:
         return False
-    return True
+    return current_associativity == "left"
 
 def to_postfix(source):
     """The expression of source as a list of tokens in reverse polish order."""
@@ -214,6 +214,9 @@ def _shunt(tokens):
             raise ExpressionError("cannot shunt the token %r" % (kind,))
         previous = token
     drain()
+    if frames:
+        frame = frames[-1]
+        raise ParseError("the ( at position %d is never closed" % (frame.position,))
     if previous is not None and previous.kind not in VALUE_KINDS:
         raise ParseError("the expression ends with %r" % (previous.text,))
     if not output:
@@ -248,6 +251,7 @@ def _run(tokens, environment):
             if len(stack) < token.value:
                 raise EvaluationError("the call to %r at position %d has too few arguments" % (token.text, token.position))
             arguments = [stack.pop() for _ in range(token.value)]
+            arguments.reverse()
             stack.append(_call(token.text, arguments))
         else:
             raise ExpressionError("cannot run the token %r" % (kind,))
@@ -260,9 +264,6 @@ def _apply_unary(operator, value):
     return -value if operator == "-" else +value
 
 def _apply_binary(operator, left, right):
-    if operator in ("/", "%") and left == 0:
-        reason = "division by zero" if operator == "/" else "modulo by zero"
-        raise EvaluationError(reason)
     if operator == "+":
         return left + right
     if operator == "-":
@@ -270,17 +271,19 @@ def _apply_binary(operator, left, right):
     if operator == "*":
         return left * right
     if operator == "/":
-        if isinstance(left, int) and isinstance(right, int):
-            return left // right
+        if right == 0:
+            raise EvaluationError("division by zero")
         return left / right
     if operator == "%":
+        if right == 0:
+            raise EvaluationError("modulo by zero")
         return _modulo(left, right)
     if operator == "^":
         return _power(left, right)
     raise ExpressionError("unknown operator %r" % (operator,))
 
 def _modulo(left, right):
-    return math.fmod(left, right)
+    return left % right
 
 def _sqrt(value):
     if value < 0:
@@ -288,11 +291,10 @@ def _sqrt(value):
     return math.sqrt(value)
 
 def _power(base, exponent):
-    if not isinstance(exponent, int):
-        if base < 0:
-            raise EvaluationError("a negative base needs an integer exponent")
-    elif exponent < 0 and base == 0:
+    if base == 0 and exponent < 0:
         raise EvaluationError("zero raised to a negative power")
+    if not isinstance(exponent, int) and base < 0:
+        raise EvaluationError("a negative base needs an integer exponent")
     return base ** exponent
 
 
@@ -313,7 +315,7 @@ def _call(name, arguments):
         raise EvaluationError("there is no function named %r" % (name,))
     minimum, maximum, function = entry
     count = len(arguments)
-    if count < minimum:
+    if count < minimum or (maximum is not None and count > maximum):
         raise EvaluationError("%s takes %s, not %d" % (name, _arity_text(minimum, maximum), count))
     return function(arguments)
 
